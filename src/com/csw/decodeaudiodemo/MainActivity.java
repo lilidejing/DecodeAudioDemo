@@ -18,7 +18,7 @@ public class MainActivity extends Activity {
 		String path=Environment.getExternalStorageDirectory().getAbsolutePath();
 		final AudioCodec audioCodec=AudioCodec.newInstance();
 		audioCodec.setEncodeType(MIME_TYPE);
-		audioCodec.setIOPath(path + "/input.mpg", path + "/encode.h264");
+		audioCodec.setIOPath(path + "/input2.mp4", path + "/encode_test.h264");
 		audioCodec.prepare();
 		audioCodec.startAsync();
 		audioCodec.setOnCompleteListener(new AudioCodec.OnCompleteListener() {

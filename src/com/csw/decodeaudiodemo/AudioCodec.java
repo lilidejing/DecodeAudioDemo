@@ -1,9 +1,12 @@
 package com.csw.decodeaudiodemo;
 
+import android.annotation.SuppressLint;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
+import android.media.MediaMuxer;
+import android.os.Environment;
 import android.util.Log;
 
 import java.io.BufferedInputStream;
@@ -17,6 +20,8 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+
+import com.csw.remux.CswRemuxer;
 
 /**
  * Created by senshan_wang on 2016/3/31.
@@ -46,18 +51,62 @@ public class AudioCodec {
 	private long fileTotalSize;
 	private long decodeSize;
 
-	private static final String MIME_TYPE = "video/avc"; // H.264 Advanced Video
-															// Coding
+	private static final String MIME_TYPE = "video/avc"; // H.264 Advanced Video Coding
+//	private static final String MIME_TYPE ="video/mp4v-es";			// 
 	private static final int FRAME_RATE = 30; // 30 fps
-	private static final int IFRAME_INTERVAL = 1; // 10 seconds between I-frames
+	private static final int IFRAME_INTERVAL = 5; // 10 seconds between I-frames
 	private static final int TIMEOUT_US = 10000;
 
-	private int mWidth = 640;
-	private int mHeight = 340;
-	private int mBitRate = 444000;
+//	private int mWidth = 352;
+//	private int mHeight = 240;
+//	private int mBitRate = 1152000;   //mpg文件
+	
+	
+	private int mWidth = 1280;
+	private int mHeight = 720;
+	private int mBitRate = 3258000;   //mpg文件
+	
+	
+//	private int mWidth = 640;
+//	private int mHeight = 344;
+//	private int mBitRate = 1444000;   //mp4文件
+//	
 
 	private OutputStream mOutputStream;
+	
+	private OutputStream mYUV420OutputStream;
+	
+	
+	private MediaMuxer mMuxer;
+    private boolean mMuxerStarted = false;
+    private int mVideoTrackIndex = -1;
+	
+    
+    private final int decodeColorFormat = MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar;//rk3128
+   
+    
+    //COLOR_FormatRawBayer8bitcompressed  32
+//    private final int decodeColorFormat = MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar;//a83  
+    		
+    		//MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar;
 
+//    private final int decodeColorFormat = MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible;//三星
+    /**
+     * 当前系统版本号
+     */
+   private static int SDKversion = Integer.valueOf(android.os.Build.VERSION.SDK);
+    
+    private boolean isColorFormatSupported(int colorFormat, MediaCodecInfo.CodecCapabilities caps) {
+    	Log.i(TAG, "color==?");
+        for (int c : caps.colorFormats) {
+        	Log.i(TAG, "color=="+c);
+            if (c == colorFormat) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
 	public static AudioCodec newInstance() {
 		return new AudioCodec();
 	}
@@ -100,11 +149,14 @@ public class AudioCodec {
 			}
 			mOutputStream = new FileOutputStream(mFile);
 
-		} catch (FileNotFoundException e) {
+			mYUV420OutputStream=new FileOutputStream(new File("/sdcard/test2.yuv"));
+			
+			
+		} catch (Exception e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
-
+		
 		if (encodeType == null) {
 			throw new IllegalArgumentException("encodeType can't be null");
 		}
@@ -130,10 +182,35 @@ public class AudioCodec {
 
 		if (encodeType.equals("video/avc")) {
 			initH264MediaEncode();// H264编码器
+			
+			try {
+				File file = new File(Environment.getExternalStorageDirectory(),
+			              "record_test.mp4");
+				mMuxer = new MediaMuxer(file.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+			} catch (IOException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
 		}
 
 	}
 
+	 private void resetOutputFormat() {
+	        // should happen before receiving buffers, and should only happen once
+	        if (mMuxerStarted) {
+	            throw new IllegalStateException("output format already changed!");
+	        }
+	        MediaFormat newFormat = mediaEncode.getOutputFormat();
+
+	        Log.i(TAG, "output format changed.\n new format: " + newFormat);
+	        mVideoTrackIndex = mMuxer.addTrack(newFormat);
+	        mMuxer.start();
+	        mMuxerStarted = true;
+	        Log.i(TAG, "started media muxer, videoIndex=" + mVideoTrackIndex);
+	    }
+	
+	
+	
 	/**
 	 * 初始化解码器
 	 */
@@ -145,11 +222,23 @@ public class AudioCodec {
 																		// 此处我们传入的是视频文件，所以也就只有一条轨道
 				MediaFormat format = mediaExtractor.getTrackFormat(i);
 				String mime = format.getString(MediaFormat.KEY_MIME);
+				Log.d(TAG, "mime=="+mime);
 				if (mime.startsWith("video")) {// 获取视频轨道
 					// format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 200 *
 					// 1024);
 					mediaExtractor.selectTrack(i);// 选择此视频轨道
+					
 					mediaDecode = MediaCodec.createDecoderByType(mime);// 创建Decode解码器
+					
+					
+					
+					if (isColorFormatSupported(decodeColorFormat, mediaDecode.getCodecInfo().getCapabilitiesForType(mime))) {
+						format.setInteger(MediaFormat.KEY_COLOR_FORMAT, decodeColorFormat);
+		                Log.i(TAG, "set decode color format to type " + decodeColorFormat);
+		            } else {
+		                Log.i(TAG, "unable to set decode color format, color format type " + decodeColorFormat + " not supported");
+		            }
+					
 					mediaDecode.configure(format, null, null, 0);
 					break;
 				}
@@ -190,9 +279,9 @@ public class AudioCodec {
 			MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE,
 					mWidth, mHeight);
 //			format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
-//					MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);// COLOR_FormatYUV420SemiPlanar
+//					MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);// COLOR_FormatYUV420SemiPlanar，3128
 			format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
-					MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar);
+					MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar);//COLOR_FormatYUV420Planar，A83
 			format.setInteger(MediaFormat.KEY_BIT_RATE, mBitRate);
 			format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
 			format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, IFRAME_INTERVAL);
@@ -272,11 +361,15 @@ public class AudioCodec {
 		}
 	}
 
+	
+	private  int conut=0;
+	private boolean falg=false;
 	/**
 	 * 解码{@link #srcPath}视频文件 得到YUV数据块
 	 * 
 	 * @return 是否解码完所有数据
 	 */
+	@SuppressLint("NewApi")
 	private void srcAudioFormatToYUV() {
 		for (int i = 0; i < decodeInputBuffers.length - 1; i++) {
 			int inputIndex = mediaDecode.dequeueInputBuffer(-1);// 获取可用的inputBuffer
@@ -306,29 +399,74 @@ public class AudioCodec {
 				10000);
 
 		// showLog("decodeOutIndex:" + outputIndex);
-		ByteBuffer outputBuffer;
-		byte[] chunkYUV;
-		while (outputIndex >= 0) {// 每次解码完成的数据不一定能一次吐出 所以用while循环，保证解码器吐出所有数据
-			outputBuffer = decodeOutputBuffers[outputIndex];// 拿到用于存放YUV数据的Buffer
-			chunkYUV = new byte[decodeBufferInfo.size];// BufferInfo内定义了此数据块的大小
-			outputBuffer.get(chunkYUV);// 将Buffer内的数据取出到字节数组中
-			outputBuffer.clear();// 数据取出后一定记得清空此Buffer
-									// MediaCodec是循环使用这些Buffer的，不清空下次会得到同样的数据
-			putYUVData(chunkYUV);// 自己定义的方法，供编码器所在的线程获取数据,下面会贴出代码
+		switch (outputIndex) {
+		case MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED:
+			Log.i(TAG, "----------- INFO_OUTPUT_BUFFERS_CHANGED");
+			// outputBuffers = decoder.getOutputBuffers();
+			break;
+		case MediaCodec.INFO_OUTPUT_FORMAT_CHANGED:
+			Log.i(TAG,
+					"------------ New format "
+							+ mediaDecode.getOutputFormat());
+			// resetOutputFormat(decoder.getOutputFormat());
+			break;
+		case MediaCodec.INFO_TRY_AGAIN_LATER:
+			Log.i(TAG,
+					"----------- dequeueOutputBuffer timed out, try again later!");
+			break;
+		default:
+			
+			ByteBuffer outputBuffer;
+			byte[] chunkYUV;
+			while (outputIndex >= 0) {// 每次解码完成的数据不一定能一次吐出 所以用while循环，保证解码器吐出所有数据
+				
+				if(SDKversion>=21){
+					Log.i(TAG,
+							"----------- SDKversion>=21");
+					outputBuffer = mediaDecode.getOutputBuffer(outputIndex);// 拿到用于存放YUV数据的Buffer
+				}else{
+					outputBuffer = decodeOutputBuffers[outputIndex];// 拿到用于存放YUV数据的Buffer
+				}
+				
+				chunkYUV = new byte[decodeBufferInfo.size];// BufferInfo内定义了此数据块的大小
+				outputBuffer.get(chunkYUV);// 将Buffer内的数据取出到字节数组中
+				outputBuffer.clear();// 数据取出后一定记得清空此Buffer
+										// MediaCodec是循环使用这些Buffer的，不清空下次会得到同样的数据
+				putYUVData(chunkYUV);// 自己定义的方法，供编码器所在的线程获取数据,下面会贴出代码
 
-			/*try {
-				mOutputStream.write(chunkYUV);
-			} catch (IOException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			}*/
+				Log.i(TAG,
+						"----------- putYUVData(chunkYUV);");
+				/*try {
+					
+						mOutputStream.write(chunkYUV);
 
-			mediaDecode.releaseOutputBuffer(outputIndex, false);// 此操作一定要做，不然MediaCodec用完所有的Buffer后
-																// 将不能向外输出数据
-			outputIndex = mediaDecode.dequeueOutputBuffer(decodeBufferInfo,
-					10000);// 再次获取数据，如果没有数据输出则outputIndex=-1 循环结束
+				} catch (IOException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}*/
+				
+				if(chunkYUVDataContainer.size()>10){
+					try {
+						Thread.sleep(25);
+					} catch (InterruptedException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+				}
+				
+				
+				
+				mediaDecode.releaseOutputBuffer(outputIndex, false);// 此操作一定要做，不然MediaCodec用完所有的Buffer后
+																	// 将不能向外输出数据
+				outputIndex = mediaDecode.dequeueOutputBuffer(decodeBufferInfo,
+						10000);// 再次获取数据，如果没有数据输出则outputIndex=-1 循环结束
+			}
+			
+			
+			
+			
 		}
-
+		
 	}
 
 	
@@ -361,20 +499,33 @@ public class AudioCodec {
 			} else {
 				Log.d(TAG, "chunkYUV != null");
 				
-
-				
-				
 				inputIndex = mediaEncode.dequeueInputBuffer(-1);// 同解码器
 				inputBuffer = encodeInputBuffers[inputIndex];// 同解码器
-		
-				
+				if(SDKversion>=21){
+					inputBuffer = mediaEncode.getInputBuffer(inputIndex);	
+					Log.i(TAG, "inputBuffer    SDKversion>=21");
+				}else{
+					inputBuffer = encodeInputBuffers[inputIndex];// 同解码器
+				}
+
 				int chunkYUVLength = chunkYUV.length ;//取出来的YUV字节数据长度
 				
 				int tempByteLength=inputBuffer.capacity();
 				
 				byte tempByte[] = new byte[tempByteLength];
 		
-				System.arraycopy(chunkYUV, 0, tempByte, 0, tempByteLength);
+
+				Log.d(TAG, "chunkYUVLength=="+chunkYUVLength+"   tempByteLength=="+tempByteLength);
+				
+				if(chunkYUVLength<=tempByteLength){
+					tempByte = new byte[chunkYUVLength];
+					System.arraycopy(chunkYUV, 0, tempByte, 0, chunkYUVLength);
+					
+				}else{
+					System.arraycopy(chunkYUV, 0, tempByte, 0, tempByteLength);
+				}
+				
+				
 				
 				if(chunkYUVLength>tempByteLength){
 					int tempLength=chunkYUVLength-tempByteLength;
@@ -400,7 +551,16 @@ public class AudioCodec {
 			} // 编码
 		}else{
 			inputIndex = mediaEncode.dequeueInputBuffer(-1);// 同解码器
-			inputBuffer = encodeInputBuffers[inputIndex];// 同解码器
+
+			if(SDKversion>=21){
+				
+				Log.i(TAG, "inputBufcccccfer    SDKversion>=21");
+				
+				inputBuffer = mediaEncode.getInputBuffer(inputIndex);		
+			}else{
+				inputBuffer = encodeInputBuffers[inputIndex];// 同解码器
+			}
+			
 
 			inputBuffer.clear();// 同解码器
 
@@ -415,15 +575,74 @@ public class AudioCodec {
 		// }
 
 		outputIndex = mediaEncode.dequeueOutputBuffer(encodeBufferInfo, 10000);// 同解码器
-		Log.d(TAG, "outputIndex=" + outputIndex);
+		Log.i(TAG, "outputIndex=" + outputIndex);
+		
+
+		/* if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+			 
+			 Log.d(TAG, "outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED");
+             resetOutputFormat();
+
+         } else if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+             Log.d(TAG, "retrieving buffers time out!");
+             try {
+                 // wait 10ms
+                 Thread.sleep(10);
+             } catch (InterruptedException e) {
+             }
+         } 
+         
+		 while(outputIndex >= 0){
+			 
+			 if (!mMuxerStarted) {
+                 throw new IllegalStateException("MediaMuxer dose not call addTrack(format) ");
+             }
+             
+             ByteBuffer  encodedData = encodeOutputBuffers[outputIndex];
+
+             if ((encodeBufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                 // The codec config data was pulled out and fed to the muxer when we got
+                 // the INFO_OUTPUT_FORMAT_CHANGED status.
+                 // Ignore it.
+                 Log.d(TAG, "ignoring BUFFER_FLAG_CODEC_CONFIG");
+                 encodeBufferInfo.size = 0;
+             }
+             if (encodeBufferInfo.size == 0) {
+                 Log.d(TAG, "info.size == 0, drop it.");
+                 encodedData = null;
+             } else {
+                 Log.d(TAG, "got buffer, info: size=" + encodeBufferInfo.size
+                         + ", presentationTimeUs=" + encodeBufferInfo.presentationTimeUs
+                         + ", offset=" + encodeBufferInfo.offset);
+
+             }
+             if (encodedData != null) {
+             	Log.i(TAG, "encodedData！=null");
+             	Log.i(TAG, "mBufferInfo.offset=="+encodeBufferInfo.offset);
+             	Log.i(TAG, "mBufferInfo.size=="+encodeBufferInfo.size);
+                 encodedData.position(encodeBufferInfo.offset);
+                 encodedData.limit(encodeBufferInfo.offset + encodeBufferInfo.size);
+                 mMuxer.writeSampleData(mVideoTrackIndex, encodedData, encodeBufferInfo);
+             }
+             
+             mediaEncode.releaseOutputBuffer(outputIndex, false);
+ 			 
+             outputIndex = mediaEncode.dequeueOutputBuffer(encodeBufferInfo,
+ 					10000);
+		 }*/
+
 		while (outputIndex >= 0) {// 同解码器
 
 			outBitSize = encodeBufferInfo.size;
 
 			Log.d(TAG, "outBitSize=" + outBitSize);
-			// outPacketSize = outBitSize + 7;// 7为ADTS头部的大小
-
-			outputBuffer = encodeOutputBuffers[outputIndex];// 拿到输出Buffer
+			
+			if(SDKversion>=21){
+				outputBuffer = mediaEncode.getOutputBuffer(outputIndex);// 拿到输出Buffer
+			}else{
+				outputBuffer = encodeOutputBuffers[outputIndex];// 拿到输出Buffer
+			}
+			
 			outputBuffer.position(encodeBufferInfo.offset);
 			outputBuffer.limit(encodeBufferInfo.offset + outBitSize);
 			chunkVedio = new byte[outBitSize];
@@ -492,7 +711,13 @@ public class AudioCodec {
 			mediaDecode.release();
 			mediaDecode = null;
 		}
-
+		
+		 /*if (mMuxer != null) {
+	            mMuxer.stop();
+	            mMuxer.release();
+	            mMuxer = null;
+	        }
+*/
 		if (mediaExtractor != null) {
 			mediaExtractor.release();
 			mediaExtractor = null;
@@ -518,6 +743,8 @@ public class AudioCodec {
 			while (!codeOver) {
 				srcAudioFormatToYUV();
 			}
+			
+		
 			Log.d(TAG, "解码completed");
 		}
 	}
@@ -536,8 +763,14 @@ public class AudioCodec {
 			if (onCompleteListener != null) {
 				onCompleteListener.completed();
 			}
-			showLog("size:" + fileTotalSize + " decodeSize:" + decodeSize
-					+ "time:" + (System.currentTimeMillis() - t));
+			showLog("size:" + fileTotalSize + " encodeSize:" + decodeSize
+					+ "  time:" + (System.currentTimeMillis() - t));
+			
+
+			int res = CswRemuxer.DoReMux("/sdcard/encode_test.h264", 
+	        		 "/sdcard/record.aac", "/sdcard/mux_output.mp4");
+			Log.d(TAG, "aac和H264合成MP4文件结果:"+res);
+			
 		}
 	}
 
@@ -571,4 +804,6 @@ public class AudioCodec {
 	private void showLog(String msg) {
 		Log.e("AudioCodec", msg);
 	}
+	
+
 }
